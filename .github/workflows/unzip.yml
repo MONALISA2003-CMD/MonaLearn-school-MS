@@ -1,0 +1,48 @@
+name: Unzip uploaded project
+
+# Triggers automatically the moment a .zip file is pushed to the repo —
+# which is exactly what happens when you use GitHub's website "Upload
+# files" button and commit. No manual step needed after that.
+on:
+  push:
+    paths:
+      - '**.zip'
+  workflow_dispatch: {}
+
+# The default GITHUB_TOKEN is read-only unless a repo/org setting says
+# otherwise — this makes sure the workflow can push the extracted files
+# back, regardless of that default.
+permissions:
+  contents: write
+
+jobs:
+  unzip:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Find and extract every zip at repo root
+        run: |
+          shopt -s nullglob
+          zips=(*.zip)
+          if [ ${#zips[@]} -eq 0 ]; then
+            echo "No .zip file found at repo root — nothing to do."
+            exit 0
+          fi
+          for z in "${zips[@]}"; do
+            echo "Extracting $z ..."
+            unzip -o "$z" -d .
+            rm "$z"
+          done
+
+      # The zip is deleted above before this commit, so this step's own
+      # commit never touches a .zip file itself — it can't re-trigger
+      # this same workflow in a loop.
+      - name: Commit extracted files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "Auto-extract uploaded zip"
+          git push
