@@ -1,0 +1,954 @@
+// MonaLearn — Core Database Schema (Prisma / PostgreSQL)
+// This is the real backend structure behind the interlinked prototype:
+// the `students` and `teachers` arrays become tables, and every module
+// that touched them (Dashboard, Fees, Attendance, Academics, Timetable,
+// HR, Communication) becomes a query or write against this same schema
+// instead of holding its own copy of the data.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────────────────────────────────────────
+// MULTI-TENANCY — every table below belongs to a School
+// ───────────────────────────────────────────────
+
+model School {
+  id            String   @id @default(cuid())
+  name          String
+  domain        String   @unique          // e.g. kitantehill.monalearn.app
+  logoUrl       String?
+  primaryColor  String   @default("#12294B")
+  createdAt     DateTime @default(now())
+
+  campuses      Campus[]
+  students      Student[]
+  staff         Staff[]
+  classes       Class[]
+  subjects      Subject[]
+  feeStructures FeeStructure[]
+  consentRecords ConsentRecord[]
+  dataAccessRequests DataAccessRequest[]
+  users         User[]
+}
+
+model Campus {
+  id       String @id @default(cuid())
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id])
+  name     String
+  location String?
+
+  students Student[]
+  staff    Staff[]
+}
+
+// ───────────────────────────────────────────────
+// PEOPLE
+// ───────────────────────────────────────────────
+
+model Student {
+  id            String   @id @default(cuid())
+  admissionNo   String   @unique          // e.g. ADM-2026-0141
+  schoolId      String
+  school        School   @relation(fields: [schoolId], references: [id])
+  campusId      String?
+  campus        Campus?  @relation(fields: [campusId], references: [id])
+  classId       String
+  class         Class    @relation(fields: [classId], references: [id])
+
+  fullName      String
+  dateOfBirth   DateTime?
+  guardianName  String?
+  guardianPhone String?
+  guardianEmail String?
+  status        StudentStatus @default(ACTIVE)
+  deletedAt     DateTime?                 // soft delete — never hard-remove a student, see prisma.service.ts middleware
+
+  createdAt     DateTime @default(now())
+
+  attendance    AttendanceRecord[]
+  grades        GradeRecord[]
+  invoices      FeeInvoice[]
+  hostelRoom    HostelRoom?      @relation(fields: [hostelRoomId], references: [id])
+  hostelRoomId  String?
+  loans         Loan[]
+  conferenceSlots    ConferenceSlot[]
+  withdrawalRequests WithdrawalRequest[]
+  messageReceipts    MessageRecipient[]
+  routeAssignments   RouteAssignment[]
+  hostelIncidents    HostelIncident[]
+  eventRegistrations EventRegistration[]
+  iepPlans           IepPlan[]
+  clinicVisits       ClinicVisit[]
+  enrollments        Enrollment[]
+  submissions        Submission[]
+  counselingSessions CounselingSession[]
+  universityApplications UniversityApplication[]
+  scholarshipApplications ScholarshipApplication[]
+  alumnusRecord     Alumnus?
+  immunizations     ImmunizationRecord[]
+  referrals         Referral[]
+  caseNotes         CaseNote[]
+  coursePlan        CoursePlan?
+
+  @@index([schoolId, classId])
+}
+
+enum StudentStatus {
+  ACTIVE
+  WITHDRAWN
+  GRADUATED
+  SUSPENDED
+}
+
+model Staff {
+  id          String   @id @default(cuid())
+  staffNo     String   @unique            // e.g. STF-0041
+  schoolId    String
+  school      School   @relation(fields: [schoolId], references: [id])
+  campusId    String?
+  campus      Campus?  @relation(fields: [campusId], references: [id])
+
+  fullName    String
+  role        String                      // "Teacher", "Bursar", "Head of Department"...
+  department  String?
+  phone       String?
+  email       String?
+  onLeave     Boolean  @default(false)     // read directly by Timetable module
+  deletedAt   DateTime?                    // soft delete — a staff exit shouldn't cascade-break Payslip/TimetableSlot history
+
+  createdAt   DateTime @default(now())
+
+  subjectsTaught TeacherSubject[]
+  timetableSlots TimetableSlot[]
+  payslips       Payslip[]
+  leaveRecords   LeaveRecord[]
+  conferenceSlots ConferenceSlot[]
+  courses         Course[]
+  wardenDuties    WardenDuty[]
+  caseNotes       CaseNote[]
+  userAccount     User?
+}
+
+// ───────────────────────────────────────────────
+// ACADEMIC STRUCTURE
+// ───────────────────────────────────────────────
+
+model Class {
+  id       String @id @default(cuid())
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id])
+  name     String                          // "S.4 Blue"
+  level    String                          // "S.4"
+
+  students        Student[]
+  timetableSlots  TimetableSlot[]
+  applicants      Applicant[]
+}
+
+model Subject {
+  id       String @id @default(cuid())
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id])
+  name     String                          // "Mathematics"
+
+  teachers        TeacherSubject[]
+  grades          GradeRecord[]
+  timetableSlots  TimetableSlot[]
+}
+
+model TeacherSubject {
+  staffId   String
+  staff     Staff   @relation(fields: [staffId], references: [id])
+  subjectId String
+  subject   Subject @relation(fields: [subjectId], references: [id])
+
+  @@id([staffId, subjectId])
+}
+
+// ───────────────────────────────────────────────
+// ATTENDANCE — read by Dashboard, Academics (risk flag), Fees (correlation)
+// ───────────────────────────────────────────────
+
+model AttendanceRecord {
+  id        String   @id @default(cuid())
+  studentId String
+  student   Student  @relation(fields: [studentId], references: [id])
+  date      DateTime
+  status    AttendanceStatus
+
+  @@unique([studentId, date])
+  @@index([studentId])
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+  EXCUSED
+}
+
+// ───────────────────────────────────────────────
+// ACADEMICS
+// ───────────────────────────────────────────────
+
+model GradeRecord {
+  id         String  @id @default(cuid())
+  studentId  String
+  student    Student @relation(fields: [studentId], references: [id])
+  subjectId  String
+  subject    Subject @relation(fields: [subjectId], references: [id])
+  term       String                        // "2026-T2"
+  assessment String                        // "Mid-term", "CAT 3", "Final"
+  score      Decimal @db.Decimal(5, 2)
+
+  @@index([studentId, term])
+}
+
+// ───────────────────────────────────────────────
+// TIMETABLE — reads Staff.onLeave to flag periods needing cover
+// ───────────────────────────────────────────────
+
+model TimetableSlot {
+  id        String  @id @default(cuid())
+  classId   String
+  class     Class   @relation(fields: [classId], references: [id])
+  subjectId String
+  subject   Subject @relation(fields: [subjectId], references: [id])
+  staffId   String
+  staff     Staff   @relation(fields: [staffId], references: [id])
+  dayOfWeek Int                             // 1 = Monday ... 5 = Friday
+  startTime String                          // "08:00"
+  room      String?
+
+  @@index([staffId, dayOfWeek])
+}
+
+model LeaveRecord {
+  id        String   @id @default(cuid())
+  staffId   String
+  staff     Staff    @relation(fields: [staffId], references: [id])
+  type      String                          // "Annual", "Sick", "Maternity"
+  startDate DateTime
+  endDate   DateTime
+  status    String   @default("pending")    // pending / approved / declined
+}
+
+// ───────────────────────────────────────────────
+// FEES — Fees writes here; Dashboard/Communication/Analytics read here
+// ───────────────────────────────────────────────
+
+model FeeStructure {
+  id       String  @id @default(cuid())
+  schoolId String
+  school   School  @relation(fields: [schoolId], references: [id])
+  name     String                          // "Boarding — S.1 to S.4"
+  amount   Decimal @db.Decimal(12, 2)
+
+  invoices FeeInvoice[]
+}
+
+model FeeInvoice {
+  id             String       @id @default(cuid())
+  studentId      String
+  student        Student      @relation(fields: [studentId], references: [id])
+  feeStructureId String
+  feeStructure   FeeStructure @relation(fields: [feeStructureId], references: [id])
+  term           String                     // "2026-T2"
+  billedAmount   Decimal      @db.Decimal(12, 2)
+
+  payments       Payment[]
+
+  @@index([studentId, term])
+}
+
+model Payment {
+  id         String     @id @default(cuid())
+  invoiceId  String
+  invoice    FeeInvoice @relation(fields: [invoiceId], references: [id])
+  amount     Decimal    @db.Decimal(12, 2)
+  method     String                          // "Mobile Money", "Bank", "Cash"
+  paidAt     DateTime   @default(now())
+}
+
+// ───────────────────────────────────────────────
+// PAYROLL
+// ───────────────────────────────────────────────
+
+model Payslip {
+  id          String   @id @default(cuid())
+  staffId     String
+  staff       Staff    @relation(fields: [staffId], references: [id])
+  period      String                         // "2026-07"
+  grossSalary Decimal  @db.Decimal(12, 2)
+  paye        Decimal  @db.Decimal(12, 2)
+  nssf        Decimal  @db.Decimal(12, 2)
+  lst         Decimal  @db.Decimal(12, 2)
+  netPay      Decimal  @db.Decimal(12, 2)
+  status      String   @default("processing") // processing / paid
+}
+
+// ───────────────────────────────────────────────
+// LIBRARY — first of the remaining 20 modules extended into the schema,
+// following the exact same pattern: a new entity (Book) plus a join table
+// (Loan) that foreign-keys back to Student.
+// ───────────────────────────────────────────────
+
+model Book {
+  id       String @id @default(cuid())
+  schoolId String
+  title    String
+  author   String
+  copies   Int
+  available Int
+  deletedAt DateTime?  // a withdrawn title's loan history must stay intact
+
+  loans    Loan[]
+}
+
+model Loan {
+  id         String    @id @default(cuid())
+  bookId     String
+  book       Book      @relation(fields: [bookId], references: [id])
+  studentId  String
+  student    Student   @relation(fields: [studentId], references: [id])
+  issuedAt   DateTime  @default(now())
+  dueAt      DateTime
+  returnedAt DateTime?
+  fine       Fine?
+}
+
+model Fine {
+  id       String   @id @default(cuid())
+  loanId   String   @unique
+  loan     Loan     @relation(fields: [loanId], references: [id])
+  amount   Decimal  @db.Decimal(10, 2)
+  status   String   @default("outstanding")  // outstanding / paid
+  createdAt DateTime @default(now())
+}
+
+model HostelRoom {
+  id       String @id @default(cuid())
+  schoolId String                            // was missing entirely — the room had no tenant at all
+  name     String                            // "Emerald Dorm — Room 4"
+  capacity Int
+
+  students Student[]
+  incidents HostelIncident[]
+  wardenDuties WardenDuty[]
+}
+
+// ───────────────────────────────────────────────
+// PARENT-TEACHER CONFERENCES — a slot belongs to one Staff member and,
+// once booked, one Student (via their guardian). Same join pattern as
+// TimetableSlot, just booked on demand instead of fixed weekly.
+// ───────────────────────────────────────────────
+
+model ConferenceSlot {
+  id        String   @id @default(cuid())
+  staffId   String
+  staff     Staff    @relation(fields: [staffId], references: [id])
+  studentId String?                          // null until a guardian books it
+  student   Student? @relation(fields: [studentId], references: [id])
+  startsAt  DateTime
+  mode      ConferenceMode @default(IN_PERSON)
+  status    String   @default("open")        // open / confirmed / pending / cancelled
+}
+
+enum ConferenceMode {
+  IN_PERSON
+  VIDEO_CALL
+}
+
+// ───────────────────────────────────────────────
+// DATA PRIVACY & COMPLIANCE — consent notices/vendor agreements are
+// school-wide; access requests reference a specific Student or Staff
+// record being requested about (polymorphic via subjectType/subjectId).
+// ───────────────────────────────────────────────
+
+model ConsentRecord {
+  id          String   @id @default(cuid())
+  schoolId    String
+  school      School   @relation(fields: [schoolId], references: [id])
+  title       String                         // "Photo/media consent — Class of 2027"
+  kind        String                         // "guardian_notice" | "vendor_agreement"
+  status      String   @default("pending")   // published / signed / pending
+  effectiveAt DateTime?
+}
+
+model DataAccessRequest {
+  id          String   @id @default(cuid())
+  schoolId    String
+  school      School   @relation(fields: [schoolId], references: [id])
+  requestedBy String                          // guardian or staff name
+  subjectType String                          // "student" | "staff"
+  subjectId   String                          // Student.id or Staff.id
+  description String
+  status      String   @default("pending")    // pending / fulfilled
+  requestedAt DateTime @default(now())
+}
+
+// ───────────────────────────────────────────────
+// TRANSFERS & WITHDRAWALS — a clearance workflow against an existing
+// Student record; StudentStatus already tracks the resulting end state.
+// ───────────────────────────────────────────────
+
+model WithdrawalRequest {
+  id             String   @id @default(cuid())
+  studentId      String
+  student        Student  @relation(fields: [studentId], references: [id])
+  type           String                        // "transfer_in" | "withdrawal" | "graduation"
+  reason         String?
+  feesCleared    Boolean  @default(false)
+  libraryCleared Boolean  @default(false)
+  hostelCleared  Boolean  @default(false)
+  status         String   @default("pending")  // pending / cleared
+  requestedAt    DateTime @default(now())
+}
+
+// ───────────────────────────────────────────────
+// COMMUNICATION — one Message can target many students; delivery is
+// tracked per-recipient so "98% delivered" is a real aggregate, not a guess.
+// ───────────────────────────────────────────────
+
+model Message {
+  id         String   @id @default(cuid())
+  schoolId   String
+  channel    String                          // "sms" | "email" | "whatsapp" | "push"
+  body       String
+  sentAt     DateTime @default(now())
+  recipients MessageRecipient[]
+}
+
+model MessageRecipient {
+  id        String  @id @default(cuid())
+  messageId String
+  message   Message @relation(fields: [messageId], references: [id])
+  studentId String?
+  student   Student? @relation(fields: [studentId], references: [id])
+  status    String  @default("pending")       // pending / delivered / failed
+}
+
+// ───────────────────────────────────────────────
+// ADMISSIONS — Applicant is deliberately NOT a Student yet; enroll()
+// promotes one into the other so half-finished applications never
+// pollute the real student roster.
+// ───────────────────────────────────────────────
+
+model Applicant {
+  id            String   @id @default(cuid())
+  schoolId      String
+  fullName      String
+  applyingForClassId String
+  applyingForClass   Class    @relation(fields: [applyingForClassId], references: [id])
+  guardianPhone String?
+  examScore     Decimal? @db.Decimal(5, 2)
+  stage         String   @default("applied")  // applied / exam_scheduled / offered / enrolled
+  createdAt     DateTime @default(now())
+}
+
+// ───────────────────────────────────────────────
+// FINANCE — the school's own books, separate from what students owe
+// (FeeInvoice/Payment above). LedgerEntry is append-only; nothing here
+// gets edited after posting, only reversed with a new entry.
+// ───────────────────────────────────────────────
+
+model LedgerEntry {
+  id       String   @id @default(cuid())
+  schoolId String
+  account  String                            // "Tuition income", "Staff salaries"...
+  debit    Decimal  @default(0) @db.Decimal(14, 2)
+  credit   Decimal  @default(0) @db.Decimal(14, 2)
+  ref      String?                           // links back to a Payment/Payslip id
+  postedAt DateTime @default(now())
+}
+
+model Budget {
+  id       String  @id @default(cuid())
+  schoolId String
+  category String
+  term     String
+  allocated Decimal @db.Decimal(14, 2)
+  spent     Decimal @default(0) @db.Decimal(14, 2)
+}
+
+// ───────────────────────────────────────────────
+// TRANSPORT — Route/Vehicle are new entities; RouteAssignment is the
+// join back to Student, same shape as everything above it.
+// ───────────────────────────────────────────────
+
+model Vehicle {
+  id       String @id @default(cuid())
+  plate    String @unique
+  capacity Int
+  routes   Route[]
+  driver   Driver?
+}
+
+model Driver {
+  id           String   @id @default(cuid())
+  schoolId     String
+  fullName     String
+  licenseNo    String
+  licenseExpiry DateTime
+  phone        String?
+  vehicleId    String?  @unique
+  vehicle      Vehicle? @relation(fields: [vehicleId], references: [id])
+}
+
+model Route {
+  id         String   @id @default(cuid())
+  schoolId   String
+  name       String
+  vehicleId  String?
+  vehicle    Vehicle? @relation(fields: [vehicleId], references: [id])
+
+  assignments RouteAssignment[]
+}
+
+model RouteAssignment {
+  id        String  @id @default(cuid())
+  routeId   String
+  route     Route   @relation(fields: [routeId], references: [id])
+  studentId String
+  student   Student @relation(fields: [studentId], references: [id])
+  stopName  String
+}
+
+// ───────────────────────────────────────────────
+// HOSTEL INCIDENTS — extends the existing HostelRoom with a log;
+// optionally tied to a Student when the incident involves one.
+// ───────────────────────────────────────────────
+
+model HostelIncident {
+  id           String     @id @default(cuid())
+  hostelRoomId String
+  hostelRoom   HostelRoom @relation(fields: [hostelRoomId], references: [id])
+  studentId    String?
+  student      Student?   @relation(fields: [studentId], references: [id])
+  description  String
+  severity     String     @default("moderate")
+  status       String     @default("open")
+  reportedAt   DateTime   @default(now())
+}
+
+// ───────────────────────────────────────────────
+// EVENTS & VISITORS
+// ───────────────────────────────────────────────
+
+model Event {
+  id        String   @id @default(cuid())
+  schoolId  String
+  title     String
+  startsAt  DateTime
+  capacity  Int?
+  registrations EventRegistration[]
+}
+
+model EventRegistration {
+  id      String @id @default(cuid())
+  eventId String
+  event   Event  @relation(fields: [eventId], references: [id])
+  studentId String?
+  student   Student? @relation(fields: [studentId], references: [id])
+}
+
+model Visitor {
+  id          String    @id @default(cuid())
+  schoolId    String
+  fullName    String
+  purpose     String
+  hostStaffId String?
+  checkedInAt DateTime  @default(now())
+  checkedOutAt DateTime?
+}
+
+// ───────────────────────────────────────────────
+// SPECIAL EDUCATION & MEDICAL — both extend Student with a specialized record
+// ───────────────────────────────────────────────
+
+model IepPlan {
+  id        String   @id @default(cuid())
+  studentId String
+  student   Student  @relation(fields: [studentId], references: [id])
+  need      String                          // "Dyslexia support"...
+  status    String   @default("active")     // active / review
+  goals     IepGoal[]
+  accommodations Accommodation[]
+}
+
+model IepGoal {
+  id       String  @id @default(cuid())
+  planId   String
+  plan     IepPlan @relation(fields: [planId], references: [id])
+  goal     String
+  progress String  @default("in_progress")  // in_progress / on_track / met
+}
+
+model ClinicVisit {
+  id        String   @id @default(cuid())
+  studentId String
+  student   Student  @relation(fields: [studentId], references: [id])
+  complaint String
+  outcome   String?
+  visitedAt DateTime @default(now())
+  status    String   @default("occupied")   // occupied / discharged / referred
+}
+
+// ───────────────────────────────────────────────
+// LMS — Course/Enrollment/Assignment/Submission, all keyed back to Student
+// ───────────────────────────────────────────────
+
+model Course {
+  id          String   @id @default(cuid())
+  schoolId    String
+  title       String
+  staffId     String
+  staff       Staff    @relation(fields: [staffId], references: [id])
+  enrollments Enrollment[]
+  assignments Assignment[]
+}
+
+model Enrollment {
+  id        String  @id @default(cuid())
+  courseId  String
+  course    Course  @relation(fields: [courseId], references: [id])
+  studentId String
+  student   Student @relation(fields: [studentId], references: [id])
+  progressPct Int   @default(0)
+}
+
+model Assignment {
+  id       String @id @default(cuid())
+  courseId String
+  course   Course @relation(fields: [courseId], references: [id])
+  title    String
+  dueAt    DateTime
+  submissions Submission[]
+}
+
+model Submission {
+  id           String    @id @default(cuid())
+  assignmentId String
+  assignment   Assignment @relation(fields: [assignmentId], references: [id])
+  studentId    String
+  student      Student   @relation(fields: [studentId], references: [id])
+  submittedAt  DateTime?
+}
+
+// ───────────────────────────────────────────────
+// COUNSELING & COLLEGE/CAREER READINESS
+// ───────────────────────────────────────────────
+
+model CounselingSession {
+  id        String   @id @default(cuid())
+  studentId String
+  student   Student  @relation(fields: [studentId], references: [id])
+  type      String
+  date      DateTime @default(now())
+  status    String   @default("ongoing")    // ongoing / resolved
+}
+
+model UniversityApplication {
+  id          String  @id @default(cuid())
+  studentId   String
+  student     Student @relation(fields: [studentId], references: [id])
+  institution String
+  deadline    DateTime?
+  status      String  @default("pending")   // pending / submitted / accepted / declined
+}
+
+// ───────────────────────────────────────────────
+// FUNDRAISING & ADVANCEMENT
+// ───────────────────────────────────────────────
+
+model Donor {
+  id          String   @id @default(cuid())
+  schoolId    String
+  fullName    String
+  donations   Donation[]
+}
+
+model Campaign {
+  id       String  @id @default(cuid())
+  schoolId String
+  name     String
+  goal     Decimal @db.Decimal(14, 2)
+  donations Donation[]
+  scholarshipApplications ScholarshipApplication[]
+}
+
+model Donation {
+  id         String   @id @default(cuid())
+  donorId    String
+  donor      Donor    @relation(fields: [donorId], references: [id])
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id])
+  amount     Decimal  @db.Decimal(14, 2)
+  givenAt    DateTime @default(now())
+}
+
+model ScholarshipApplication {
+  id         String  @id @default(cuid())
+  studentId  String
+  student    Student @relation(fields: [studentId], references: [id])
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id])
+  requested  Decimal @db.Decimal(14, 2)
+  status     String  @default("review")     // review / awarded / declined
+}
+
+// ───────────────────────────────────────────────
+// INVENTORY & PROCUREMENT
+// ───────────────────────────────────────────────
+
+model Asset {
+  id        String   @id @default(cuid())
+  schoolId  String
+  name      String
+  location  String?
+  value     Decimal  @db.Decimal(14, 2)
+  condition String   @default("good")
+  maintenance MaintenanceRecord[]
+}
+
+model MaintenanceRecord {
+  id       String   @id @default(cuid())
+  assetId  String
+  asset    Asset    @relation(fields: [assetId], references: [id])
+  workType String
+  cost     Decimal  @db.Decimal(12, 2)
+  date     DateTime @default(now())
+}
+
+model PurchaseRequest {
+  id          String   @id @default(cuid())
+  schoolId    String
+  item        String
+  amount      Decimal  @db.Decimal(12, 2)
+  requestedBy String
+  status      String   @default("pending")  // pending / approved / rejected
+  order       PurchaseOrder?
+}
+
+model PurchaseOrder {
+  id        String          @id @default(cuid())
+  requestId String          @unique
+  request   PurchaseRequest @relation(fields: [requestId], references: [id])
+  vendor    String
+  status    String          @default("in_transit") // in_transit / delivered
+}
+
+// ───────────────────────────────────────────────
+// SETTINGS — role permissions per school; API keys for the API module
+// ───────────────────────────────────────────────
+
+model RolePermission {
+  id       String  @id @default(cuid())
+  schoolId String
+  role     String                          // "Class Teacher"...
+  module   String                          // "Students", "Fees"...
+  canView  Boolean @default(true)
+  canEdit  Boolean @default(false)
+  canDelete Boolean @default(false)
+  canAdmin Boolean @default(false)
+
+  @@unique([schoolId, role, module])
+}
+
+model ApiKey {
+  id        String   @id @default(cuid())
+  schoolId  String
+  name      String
+  keyHash   String                          // never store the raw key
+  status    String   @default("active")     // active / revoked
+  createdAt DateTime @default(now())
+}
+
+// ───────────────────────────────────────────────
+// FINAL AUDIT CLOSE-OUT — the 14 models flagged as having a UI tab but
+// zero backend representation. Grouped by the module they belong to.
+// ───────────────────────────────────────────────
+
+// Communication
+model Announcement {
+  id        String   @id @default(cuid())
+  schoolId  String
+  title     String
+  body      String
+  author    String
+  audience  String
+  pinned    Boolean  @default(false)
+  postedAt  DateTime @default(now())
+}
+
+model MessageTemplate {
+  id       String @id @default(cuid())
+  schoolId String
+  name     String
+  tag      String                          // "Fees", "Attendance", "Emergency"...
+  body     String
+}
+
+// API Management
+model Webhook {
+  id       String @id @default(cuid())
+  schoolId String
+  event    String                          // "payment.received"...
+  url      String
+  status   String @default("active")
+}
+
+// Settings
+model Integration {
+  id       String @id @default(cuid())
+  schoolId String
+  name     String                          // "MTN Mobile Money"...
+  type     String
+  status   String @default("pending")      // connected / pending / disconnected
+}
+
+// Portals — Alumni is deliberately NOT a Student subtype; a graduate's
+// record persists independently of the academic tables that get archived.
+model Alumnus {
+  id           String   @id @default(cuid())
+  schoolId     String
+  fullName     String
+  graduationYear Int
+  email        String?
+  studentId    String?  @unique             // links back if they were a MonaLearn student
+  student      Student? @relation(fields: [studentId], references: [id])
+}
+
+// Visitors
+model WatchlistEntry {
+  id       String @id @default(cuid())
+  schoolId String
+  name     String
+  reason   String
+  status   String @default("flagged")
+}
+
+model GatePass {
+  id        String   @id @default(cuid())
+  schoolId  String
+  name      String
+  purpose   String
+  scheduledFor DateTime
+  status    String   @default("confirmed")
+}
+
+// Medical
+model DispensaryItem {
+  id       String @id @default(cuid())
+  schoolId String
+  medicine String
+  stock    Int
+  unit     String
+}
+
+model ImmunizationRecord {
+  id        String   @id @default(cuid())
+  studentId String
+  student   Student  @relation(fields: [studentId], references: [id])
+  vaccine   String
+  dueOrDoneAt DateTime
+  status    String   @default("pending")    // pending / complete
+}
+
+// Hostel
+model WardenDuty {
+  id          String   @id @default(cuid())
+  staffId     String
+  staff       Staff    @relation(fields: [staffId], references: [id])
+  hostelRoomId String
+  hostelRoom  HostelRoom @relation(fields: [hostelRoomId], references: [id])
+  shiftLabel  String                        // "This week, Mon-Fri"
+  onDuty      Boolean  @default(true)
+}
+
+// Special Education — extends IepPlan
+model Accommodation {
+  id          String  @id @default(cuid())
+  iepPlanId   String
+  iepPlan     IepPlan @relation(fields: [iepPlanId], references: [id])
+  description String
+}
+
+// Counseling
+model Referral {
+  id         String   @id @default(cuid())
+  studentId  String
+  student    Student  @relation(fields: [studentId], references: [id])
+  referredBy String
+  reason     String
+  severity   String   @default("medium")     // low / medium / high
+  status     String   @default("open")
+  referredAt DateTime @default(now())
+}
+
+model CaseNote {
+  id          String   @id @default(cuid())
+  studentId   String
+  student     Student  @relation(fields: [studentId], references: [id])
+  counselorId String
+  counselor   Staff    @relation(fields: [counselorId], references: [id])
+  note        String
+  createdAt   DateTime @default(now())
+}
+
+// College & Career Readiness
+model CoursePlan {
+  id        String  @id @default(cuid())
+  studentId String  @unique
+  student   Student @relation(fields: [studentId], references: [id])
+  pathway   String                          // "Sciences — Medicine pathway"
+  status    String  @default("on_track")    // on_track / in_progress / behind
+}
+
+// ───────────────────────────────────────────────
+// AUTH — the model everything else has been waiting on. A User can be
+// linked to a Staff record (teachers/admins) or stand alone (a guardian
+// account has no Staff row). schoolId is what makes every "school_placeholder"
+// stub in the services above become a real tenant-scoped query.
+// ───────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(cuid())
+  schoolId     String
+  school       School   @relation(fields: [schoolId], references: [id])
+  email        String   @unique
+  passwordHash String
+  role         String                        // "admin" | "teacher" | "bursar" | "guardian" | "student"
+  staffId      String?  @unique
+  staff        Staff?   @relation(fields: [staffId], references: [id])
+  createdAt    DateTime @default(now())
+
+  auditLogs    AuditLog[]
+}
+
+// ───────────────────────────────────────────────
+// AUDIT LOG — the model Settings' UI tab has been showing hardcoded data
+// for since it was built. Every mutating request writes one row here.
+// ───────────────────────────────────────────────
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  schoolId   String
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id])
+  action     String                          // "payment.recorded", "grade.updated"...
+  entityType String                          // "FeeInvoice", "GradeRecord"...
+  entityId   String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([schoolId, createdAt])
+}
+
