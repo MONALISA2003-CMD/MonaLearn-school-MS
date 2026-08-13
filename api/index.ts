@@ -3,7 +3,25 @@ import { ExpressAdapter } from '@nestjs/platform-express';
 import { ValidationPipe } from '@nestjs/common';
 import express from 'express';
 import serverlessExpress from '@codegenie/serverless-express';
-import { AppModule } from '../server/app.module';
+
+// AppModule is deliberately NOT imported here at the top of the file.
+// A static `import { AppModule } from '../server/app.module'` gets
+// resolved and fully evaluated before ANY of this file's own function
+// bodies run — including the env-var check and the try/catch below —
+// because that's how ES module imports work: they're hoisted and
+// executed first, unconditionally, with no way to wrap them. If
+// anything anywhere in the ~40-file backend dependency graph that
+// import pulls in throws while being LOADED (not called — loaded), the
+// crash happens before this file's own code ever gets a chance to run,
+// and no amount of try/catch inside handler() below could ever have
+// caught it. That's a likely explanation for why several real,
+// verified fixes in a row produced the exact same raw, undiagnosable
+// 500 every time: the diagnostics themselves may never have executed.
+//
+// Using a dynamic `await import(...)` inside bootstrapServer() instead
+// moves that same load INSIDE the try/catch, so a crash there is
+// finally caught and its real error message gets returned in the
+// response instead of an opaque platform-level 500.
 
 // This is the ONLY function in this project — every request to /api/*
 // lands here, via the explicit rewrite in vercel.json
@@ -42,6 +60,11 @@ function checkRequiredEnvVars(): string[] {
 
 async function bootstrapServer() {
   if (cachedServer) return cachedServer;
+
+  // Dynamic import, inside the function, inside the try/catch this is
+  // called from — see the comment at the top of this file for why that
+  // matters.
+  const { AppModule } = await import('../server/app.module');
 
   const expressApp = express();
   const nestApp = await NestFactory.create(AppModule, new ExpressAdapter(expressApp));
