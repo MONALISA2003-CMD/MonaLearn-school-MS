@@ -1,5 +1,5 @@
 import { Controller, Get, Post, Patch, Param, Body, Injectable } from '@nestjs/common';
-import * as admin from 'firebase-admin';
+import { FieldValue } from '@google-cloud/firestore';
 import { FirestoreService } from './firestore.service';
 import { CurrentUser } from './auth/auth.guards';
 

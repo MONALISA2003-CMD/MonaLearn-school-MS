@@ -1,5 +1,5 @@
 import { Controller, Get, Post, Param, Body, Injectable, BadRequestException } from '@nestjs/common';
-import * as admin from 'firebase-admin';
+import { FieldValue } from '@google-cloud/firestore';
 import { FirestoreService } from './firestore.service';
 import { CurrentUser } from './auth/auth.guards';
 
@@ -82,7 +82,7 @@ export class FinanceService {
   // once.
   incrementSpend(budgetId: string, amount: number) {
     return this.firestore.db.collection('budgets').doc(budgetId).update({
-      spent: admin.firestore.FieldValue.increment(amount),
+      spent: FieldValue.increment(amount),
     });
   }
 }
