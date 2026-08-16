@@ -1,107 +1,21 @@
-import { NestFactory } from '@nestjs/core';
-import { ExpressAdapter } from '@nestjs/platform-express';
-import { ValidationPipe } from '@nestjs/common';
-import express from 'express';
-import serverlessExpress from '@codegenie/serverless-express';
-
-// AppModule is deliberately NOT imported here at the top of the file.
-// A static `import { AppModule } from '../server/app.module'` gets
-// resolved and fully evaluated before ANY of this file's own function
-// bodies run — including the env-var check and the try/catch below —
-// because that's how ES module imports work: they're hoisted and
-// executed first, unconditionally, with no way to wrap them. If
-// anything anywhere in the ~40-file backend dependency graph that
-// import pulls in throws while being LOADED (not called — loaded), the
-// crash happens before this file's own code ever gets a chance to run,
-// and no amount of try/catch inside handler() below could ever have
-// caught it. That's a likely explanation for why several real,
-// verified fixes in a row produced the exact same raw, undiagnosable
-// 500 every time: the diagnostics themselves may never have executed.
+// TEMPORARY DIAGNOSTIC VERSION — not the real backend.
 //
-// Using a dynamic `await import(...)` inside bootstrapServer() instead
-// moves that same load INSIDE the try/catch, so a crash there is
-// finally caught and its real error message gets returned in the
-// response instead of an opaque platform-level 500.
-
-// This is the ONLY function in this project — every request to /api/*
-// lands here, via the explicit rewrite in vercel.json
-// ({"source": "/api/:path*", "destination": "/api"}) rather than
-// relying on a bracket-filename catch-all convention. That's a
-// deliberate change: this file used to be named `[...slug].ts`, on the
-// assumption that Vercel's routing for a plain top-level /api folder
-// (outside Next.js's own app/pages router) supports the same
-// catch-all bracket syntax Next.js uses internally — an assumption
-// that was never actually verified and, after persistent unexplained
-// 500s survived two unrelated real fixes, became the more suspicious
-// thing. vercel.json's rewrite is the same explicit, well-documented
-// mechanism recommended for wrapping one full framework's router (here,
-// NestJS's own internal routing) in a single Vercel function — it
-// preserves the original request path, so NestJS's own routes
-// (/api/auth/login, /api/students, etc.) still resolve correctly
-// against req.url exactly as before, just via an unambiguous mechanism
-// instead of an unverified filename convention.
-let cachedServer: any;
-
-// Every service in this app needs FIREBASE_PROJECT_ID/CLIENT_EMAIL/
-// PRIVATE_KEY (via FirestoreService) and every authenticated route needs
-// JWT_SECRET (via JwtStrategy/JwtModule) — both are read directly from
-// process.env at construction time, and if either is missing, the
-// underlying library (firebase-admin or passport-jwt) throws immediately,
-// crashing the ENTIRE app before it can serve a single request. That
-// crash normally only shows up in Vercel's build/runtime logs, which
-// have been hard to fully capture from a phone in this project — so this
-// check runs first and, if something's missing, returns a plain-English
-// answer directly in the browser response instead of an opaque stack
-// trace buried in a log you may not be able to scroll to.
-function checkRequiredEnvVars(): string[] {
-  const required = ['FIREBASE_PROJECT_ID', 'FIREBASE_CLIENT_EMAIL', 'FIREBASE_PRIVATE_KEY', 'JWT_SECRET'];
-  return required.filter((key) => !process.env[key] || process.env[key]!.trim() === '');
-}
-
-async function bootstrapServer() {
-  if (cachedServer) return cachedServer;
-
-  // Dynamic import, inside the function, inside the try/catch this is
-  // called from — see the comment at the top of this file for why that
-  // matters.
-  const { AppModule } = await import('../server/app.module');
-
-  const expressApp = express();
-  const nestApp = await NestFactory.create(AppModule, new ExpressAdapter(expressApp));
-
-  nestApp.useGlobalPipes(
-    new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
-  );
-  // No enableCors() here on purpose: in single-project mode the frontend
-  // and API are served from the same origin, so cross-origin requests
-  // never happen — the two-project version needs CORS, this one doesn't.
-  nestApp.setGlobalPrefix('api');
-
-  await nestApp.init();
-  cachedServer = serverlessExpress({ app: expressApp });
-  return cachedServer;
-}
-
-export default async function handler(req: any, res: any) {
-  const missing = checkRequiredEnvVars();
-  if (missing.length > 0) {
-    res.status(500).json({
-      error: 'Missing required environment variables',
-      missing,
-      fix: 'Go to Vercel → this project → Settings → Environment Variables and add the variable(s) listed above, spelled exactly as shown, then redeploy.',
-    });
-    return;
-  }
-
-  try {
-    const server = await bootstrapServer();
-    return server(req, res);
-  } catch (err: any) {
-    // Same idea as the env-var check above: put the real error where it
-    // can actually be read, instead of only in a log.
-    res.status(500).json({
-      error: 'The app failed to start',
-      message: err?.message ?? String(err),
-    });
-  }
+// This deliberately has ZERO imports beyond what Node itself provides.
+// No NestJS, no Express, no Firestore, no bcryptjs, nothing from
+// server/. The full version (with the real backend) is saved
+// separately and will be restored once this test tells us something.
+//
+// Purpose: isolate whether the top-level /api folder + vercel.json
+// rewrite mechanism itself works at all for this specific project, or
+// whether the problem is specifically something inside the NestJS/
+// Firestore/dependency layer. If THIS bare function also fails the
+// same way /api/health has been failing, that rules out everything
+// built inside api/index.ts so far and points squarely at the routing
+// mechanism (or something even more fundamental) instead.
+export default function handler(req: any, res: any) {
+  res.status(200).json({
+    ok: true,
+    message: 'Bare minimum Vercel function — no NestJS, no Firestore, no dependencies at all. If you see this, the top-level /api folder + vercel.json rewrite mechanism works correctly, and the problem is specifically inside the real backend code.',
+    timestamp: new Date().toISOString(),
+  });
 }
