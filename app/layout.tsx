@@ -1,4 +1,5 @@
 import "./globals.css";
+import DevAuthSeed from "./dev-auth-seed";
 
 export const metadata = {
   title: "MonaLearn",
@@ -15,7 +16,10 @@ export default function RootLayout({ children }) {
           rel="stylesheet"
         />
       </head>
-      <body>{children}</body>
+      <body>
+        <DevAuthSeed />
+        {children}
+      </body>
     </html>
   );
 }
